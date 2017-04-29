@@ -36,6 +36,116 @@ NS_BLANK = 'http://itstool.org/extensions/blank/'
 NS_XLINK = 'http://www.w3.org/1999/xlink'
 NS_XML = 'http://www.w3.org/XML/1998/namespace'
 
+
+class ParseError(Exception):
+    pass
+
+
+class XMLParser(object):
+    """Parser code encapsulating any libxml2 direct access."""
+    def __init__(self):
+        self._xml_errs = []
+        libxml2.registerErrorHandler(self.xml_error_catcher, self)
+
+    def parse_file(self, filename, load_dtd=False, keep_entities=False, line_numbers=True):
+        try:
+            ctxt = libxml2.createFileParserCtxt(filename)
+        except Exception:
+            sys.stderr.write('Error: cannot open XML file %s\n' % filename)
+            sys.exit(1)
+        if line_numbers:
+            ctxt.lineNumbers(1)
+        if load_dtd:
+            ctxt.loadSubset(1)
+        if keep_entities:
+            ctxt.replaceEntities(0)
+        else:
+            ctxt.replaceEntities(1)
+        ctxt.parseDocument()
+        self.filename = filename
+        rules = self.collect_rules(ctxt.doc())
+        try:
+            self._check_errors()
+        except ParseError as e:
+            sys.stderr.write('Error: Could not parse document:\n%s\n' % str(e))
+            sys.exit(1)
+        return ctxt.doc(), rules
+
+    def parse_simple_file(self, filename):
+        return libxml2.parseFile(filename)
+
+    def create_file(self, content, load_dtd=False):
+        ctxt = libxml2.createDocParserCtxt(content)
+        if load_dtd:
+            ctxt.loadSubset(1)
+        ctxt.replaceEntities(0)
+        ctxt.parseDocument()
+        self._check_errors()
+
+        return ctxt.doc()
+
+    @staticmethod
+    def xml_error_catcher(doc, error):
+        doc._xml_errs.append(error)
+
+    def _check_errors(self):
+        if self._xml_errs:
+            err = " ".join(self._xml_errs)
+            self._xml_errs = []
+            raise ParseError(err)
+
+    def collect_rules(self, node):
+        rules = []
+        for child in xml_child_iter(node):
+            if xml_is_ns_name(child, 'http://www.w3.org/2001/XInclude', 'include'):
+                if child.nsProp('parse', None) == 'text':
+                    child.xincludeProcessTree()
+            elif xml_is_ns_name(child, NS_ITS, 'rules'):
+                if child.hasNsProp('href', NS_XLINK):
+                    href = child.nsProp('href', NS_XLINK)
+                    fileref = os.path.join(os.path.dirname(self.filename), href)
+                    if not os.path.exists(fileref):
+                        if opts.itspath is not None:
+                            for pathdir in opts.itspath:
+                                fileref = os.path.join(pathdir, href)
+                                if os.path.exists(fileref):
+                                    break
+                    if not os.path.exists(fileref):
+                        sys.stderr.write('Error: Could not locate ITS file %s\n' % href)
+                        sys.exit(1)
+                    hctxt = libxml2.createFileParserCtxt(fileref)
+                    hctxt.replaceEntities(1)
+                    hctxt.parseDocument()
+                    root = hctxt.doc().getRootElement()
+                    version = None
+                    if root.hasNsProp('version', None):
+                        version = root.nsProp('version', None)
+                    else:
+                        sys.stderr.write('Warning: ITS file %s missing version attribute\n' %
+                                         os.path.basename(href))
+                    if version is not None and version not in ('1.0', '2.0'):
+                        sys.stderr.write('Warning: Skipping ITS file %s with unknown version %s\n' %
+                                         (os.path.basename(href), root.nsProp('version', None)))
+                    else:
+                        rules.append(root)
+                version = None
+                if child.hasNsProp('version', None):
+                    version = child.nsProp('version', None)
+                else:
+                    root = child.doc.getRootElement()
+                    if root.hasNsProp('version', NS_ITS):
+                        version = root.nsProp('version', NS_ITS)
+                    else:
+                        sys.stderr.write('Warning: Local ITS rules missing version attribute\n')
+                if version is not None and version not in ('1.0', '2.0'):
+                    sys.stderr.write('Warning: Skipping local ITS rules with unknown version %s\n' %
+                                     version)
+                else:
+                    rules.append(child)
+            rules.extend(self.collect_rules(child))
+        return rules
+
+
 class NoneTranslations:
     def gettext(self, message):
         return None
@@ -405,9 +515,6 @@ def xml_get_node_path(node):
         name = xml_get_node_path(node.parent) + name
     return name
 
-def xml_error_catcher(doc, error):
-    doc._xml_err += " %s" % error
-
 def fix_node_ns (node, nsdefs):
     childnsdefs = nsdefs.copy()
     nsdef = node.nsDefs()
@@ -445,81 +552,15 @@ class LocNote (object):
 
 class Document (object):
     def __init__ (self, filename, messages, load_dtd=False, keep_entities=False):
-        self._xml_err = ''
-        libxml2.registerErrorHandler(xml_error_catcher, self)
-        try:
-            ctxt = libxml2.createFileParserCtxt(filename)
-        except:
-            sys.stderr.write('Error: cannot open XML file %s\n' % filename)
-            sys.exit(1)
-        ctxt.lineNumbers(1)
+        self._filename = filename
+        self._msgs = messages
         self._load_dtd = load_dtd
         self._keep_entities = keep_entities
-        if load_dtd:
-            ctxt.loadSubset(1)
-        if keep_entities:
-            ctxt.replaceEntities(0)
-        else:
-            ctxt.replaceEntities(1)
-        ctxt.parseDocument()
-        self._filename = filename
-        self._doc = ctxt.doc()
-        self._localrules = []
-        def pre_process (node):
-            for child in xml_child_iter(node):
-                if xml_is_ns_name(child, 'http://www.w3.org/2001/XInclude', 'include'):
-                    if child.nsProp('parse', None) == 'text':
-                        child.xincludeProcessTree()
-                elif xml_is_ns_name(child, NS_ITS, 'rules'):
-                    if child.hasNsProp('href', NS_XLINK):
-                        href = child.nsProp('href', NS_XLINK)
-                        fileref = os.path.join(os.path.dirname(filename), href)
-                        if not os.path.exists(fileref):
-                            if opts.itspath is not None:
-                                for pathdir in opts.itspath:
-                                    fileref = os.path.join(pathdir, href)
-                                    if os.path.exists(fileref):
-                                        break
-                        if not os.path.exists(fileref):
-                            sys.stderr.write('Error: Could not locate ITS file %s\n' % href)
-                            sys.exit(1)
-                        hctxt = libxml2.createFileParserCtxt(fileref)
-                        hctxt.replaceEntities(1)
-                        hctxt.parseDocument()
-                        root = hctxt.doc().getRootElement()
-                        version = None
-                        if root.hasNsProp('version', None):
-                            version = root.nsProp('version', None)
-                        else:
-                            sys.stderr.write('Warning: ITS file %s missing version attribute\n' %
-                                             os.path.basename(href))
-                        if version is not None and version not in ('1.0', '2.0'):
-                            sys.stderr.write('Warning: Skipping ITS file %s with unknown version %s\n' %
-                                             (os.path.basename(href), root.nsProp('version', None)))
-                        else:
-                            self._localrules.append(root)
-                    version = None
-                    if child.hasNsProp('version', None):
-                        version = child.nsProp('version', None)
-                    else:
-                        root = child.doc.getRootElement()
-                        if root.hasNsProp('version', NS_ITS):
-                            version = root.nsProp('version', NS_ITS)
-                        else:
-                            sys.stderr.write('Warning: Local ITS rules missing version attribute\n')
-                    if version is not None and version not in ('1.0', '2.0'):
-                        sys.stderr.write('Warning: Skipping local ITS rules with unknown version %s\n' %
-                                         version)
-                    else:
-                        self._localrules.append(child)
-                pre_process(child)
-        pre_process(self._doc)
-        try:
-            self._check_errors()
-        except libxml2.parserError as e:
-            sys.stderr.write('Error: Could not parse document:\n%s\n' % str(e))
-            sys.exit(1)
-        self._msgs = messages
+
+        self.parser = XMLParser()
+        self._doc, self._localrules = self.parser.parse_file(
+            filename, load_dtd=load_dtd, keep_entities=keep_entities, line_numbers=True
+        )
         self._its_translate_nodes = {}
         self._its_within_text_nodes = {}
         self._its_locale_filters = {}
@@ -532,10 +573,6 @@ class Document (object):
         self._itst_lang_attr = {}
         self._itst_credits = None
         self._its_externals = {}
-
-    def _check_errors(self):
-        if self._xml_err:
-            raise libxml2.parserError(self._xml_err)
 
     def register_its_params(self, xpath, rules, params={}):
         for child in xml_child_iter(rules):
@@ -735,7 +772,7 @@ class Document (object):
         self.apply_local_its_rules(params=params)
 
     def apply_its_file(self, filename, params={}):
-        doc = libxml2.parseFile(filename)
+        doc = self.parser.parse_simple_file(filename)
         root = doc.getRootElement()
         if not xml_is_ns_name(root, NS_ITS, 'rules'):
             return
@@ -900,7 +937,7 @@ class Document (object):
             # we end up with lots of redundant namespace definitions. We
             # kill them off in one fell swoop at the end.
             fix_node_ns(node, {})
-            self._check_errors()
+            self.parser._check_errors()
 
     def merge_translations(self, translations, language, node=None, strict=False):
         is_root = False
@@ -968,7 +1005,7 @@ class Document (object):
             # we end up with lots of redundant namespace definitions. We
             # kill them off in one fell swoop at the end.
             fix_node_ns(node, {})
-            self._check_errors()
+            self.parser._check_errors()
 
     def translate_attrs(self, oldnode, newnode):
         trans_attrs = [attr for attr in xml_attr_iter(oldnode) if self._its_translate_nodes.get(attr, 'no') == 'yes']
@@ -1011,23 +1048,18 @@ class Document (object):
             else:
                 blurb += ' xmlns:%s="%s"' % (nsname, nss[nsname])
         blurb += '>%s</%s>' % (trans.encode('utf-8'), node.name)
-        ctxt = libxml2.createDocParserCtxt(blurb)
-        if self._load_dtd:
-            ctxt.loadSubset(1)
-        ctxt.replaceEntities(0)
-        ctxt.parseDocument()
-        trnode = ctxt.doc().getRootElement()
         try:
-            self._check_errors()
-        except libxml2.parserError as e:
+            doc = self.parser.create_file(blurb, load_dtd=self._load_dtd)
+        except ParseError as e:
             if strict:
                 raise
             else:
                 sys.stderr.write('Warning: Could not merge %stranslation for msgid:\n%s\n' % (
                         (lang + ' ') if lang is not None else '',
                         msgstr.encode('utf-8')))
-                self._xml_err = ''
                 return node
+        trnode = doc.getRootElement()
+
         def scan_node(node):
             children = [child for child in xml_child_iter(node)]
             for child in children:
@@ -1051,7 +1083,6 @@ class Document (object):
                 sys.stderr.write('Warning: Could not merge %stranslation for msgid:\n%s\n' % (
                     (lang + ' ') if lang is not None else '',
                     msgstr.encode('utf-8')))
-                self._xml_err = ''
                 return node
         retnode = node.copyNode(2)
         for child in xml_child_iter(trnode):
