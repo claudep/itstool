@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+<?xml version='1.0' encoding='UTF-8'?>
 <myDoc>
  <head>
   <its:rules xmlns:its="http://www.w3.org/2005/11/its" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.0" xlink:type="simple" xlink:href="Translate2_LinkedRules.xml"/>
@@ -6,5 +6,4 @@
  <body>
   <par id="100" title="Texte">C'est le premier paragraphe. Il contient du texte <code>un-translatable code</code>.</par>
  </body>
-</myDoc>
-<!-- timestamp $Id: Translate2.xml,v 1.4 2007/02/02 16:55:05 srahtz3 Exp $ -->
+</myDoc><!-- timestamp $Id: Translate2.xml,v 1.4 2007/02/02 16:55:05 srahtz3 Exp $ -->

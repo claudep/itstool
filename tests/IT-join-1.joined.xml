@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+<?xml version='1.0' encoding='UTF-8'?>
 <catalog xmlns="http://example.com/catalog/" xmlns:cat="http://example.com/catalog/" xmlns:extra="http://example.com/catalog/extra/">
   <its:rules xmlns:its="http://www.w3.org/2005/11/its" version="1.0">
     <its:withinTextRule selector="//cat:span" withinText="yes"/>
